@@ -1,8 +1,3 @@
-#ifdef _WIN64
-#else
-#define _X86_
-#endif
-
 #define UNICODE
 #define _UNICODE
 #define WIN32_LEAN_AND_MEAN
@@ -25,10 +20,7 @@ const wchar_t* WINDOW_TITLE = L"Image Receiver";
 constexpr size_t maxBufferSize = 1024 * 1024 * sizeof(uint8_t);
 
 struct Frame {
-    uint32_t width;
-    uint32_t height;
-    uint32_t dataSize;
-    uint32_t frameNumber;
+    uint32_t width, height, dataSize, frameNumber;
     std::vector<uint8_t> data;
 
     Frame() : data(maxBufferSize) {} // Pre-allocate buffer
@@ -36,7 +28,11 @@ struct Frame {
 
 class ImageWindow {
     HWND hwnd{nullptr};
-    static inline BITMAPINFO bmi{};
+    // Define BITMAPINFO with room for color table
+    struct {
+        BITMAPINFOHEADER bmiHeader;
+        RGBQUAD bmiColors[256];
+    } inline static bmi{};
     static inline std::array<uint8_t, maxBufferSize> frontBuffer{};
     static inline std::array<uint8_t, maxBufferSize> backBuffer{};
     static inline std::mutex bufferMutex;
@@ -97,11 +93,23 @@ public:
 
 private:
     void initializeBitmapInfo() {
-        bmi.bmiHeader = {sizeof(BITMAPINFOHEADER), clientWidth, -clientHeight, 1, 8, BI_RGB, 0, 0, 0, 256, 256};
+        ZeroMemory(&bmi, sizeof(bmi));
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = clientWidth;
+        bmi.bmiHeader.biHeight = -clientHeight;  // Negative for top-down bitmap
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 8;           // 8-bit grayscale
+        bmi.bmiHeader.biCompression = BI_RGB;
+        bmi.bmiHeader.biSizeImage = clientWidth * clientHeight;
+        bmi.bmiHeader.biClrUsed = 256;          // Using all 256 colors
+        bmi.bmiHeader.biClrImportant = 256;
 
-        // Set up grayscale palette
-        for (int i = 0; i < 256; ++i) {
-            bmi.bmiColors[i] = {static_cast<BYTE>(i), static_cast<BYTE>(i), static_cast<BYTE>(i), 0};
+        // Initialize grayscale palette - BGR order required by Windows GDI
+        for (int i = 0; i < 256; i++) {
+            bmi.bmiColors[i].rgbBlue = static_cast<BYTE>(i);
+            bmi.bmiColors[i].rgbGreen = static_cast<BYTE>(i);
+            bmi.bmiColors[i].rgbRed = static_cast<BYTE>(i);
+            bmi.bmiColors[i].rgbReserved = 0;
         }
     }
 
@@ -133,8 +141,8 @@ private:
             HDC hdc = BeginPaint(hwnd, &ps);
 
             std::lock_guard<std::mutex> lock(bufferMutex);
-            SetDIBitsToDevice(hdc, 0, 0, clientWidth, clientHeight, 0, 0, 0, clientHeight, frontBuffer.data(), &bmi,
-                              DIB_RGB_COLORS);
+            SetDIBitsToDevice(hdc, 0, 0, clientWidth, clientHeight, 0, 0, 0, clientHeight, frontBuffer.data(), 
+                             reinterpret_cast<const BITMAPINFO*>(&bmi), DIB_RGB_COLORS);
 
             EndPaint(hwnd, &ps);
             return 0;

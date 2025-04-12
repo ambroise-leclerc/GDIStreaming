@@ -30,7 +30,11 @@ class NoiseWindow {
   static constexpr LONG width{792}, height{793};
   static constexpr UINT timerId{1}, frameIntervalMs{1000 / 25};
   inline static const wstring windowClassName{L"GrayscaleNoiseWindowClass"}, windowTitle{L"Grayscale Noise"};
-  inline static BITMAPINFO bmi{};
+  // Define BITMAPINFO with room for color table
+  struct {
+    BITMAPINFOHEADER bmiHeader;
+    RGBQUAD bmiColors[256];
+  } inline static bmi{};
   inline static Frame currentFrame{};  // Use default constructor
   inline static chrono::steady_clock::time_point lastFpsTime{};
   inline static SOCKET clientSocket = INVALID_SOCKET;
@@ -90,41 +94,63 @@ private:
   }
 
   static void sendData(const Frame& frame) {
-    if (clientSocket == INVALID_SOCKET) return;
-
     // Send frame header first
     if (send(clientSocket, reinterpret_cast<const char*>(&frame), sizeof(uint32_t) * 4, 0) == SOCKET_ERROR) {
       return;
     }
 
     // Send frame data
-    const char* buffer = reinterpret_cast<const char*>(frame.data.data());
+    auto buffer = reinterpret_cast<const char*>(frame.data.data());
     size_t totalSent = 0;
     while (totalSent < frame.dataSize) {
-      int sent = send(clientSocket, 
-                     buffer + totalSent, 
-                     static_cast<int>(frame.dataSize - totalSent), 
-                     0);
-      if (sent == SOCKET_ERROR) {
+      auto sent = send(clientSocket, buffer + totalSent, static_cast<int>(frame.dataSize - totalSent), 0);
+      if (sent == SOCKET_ERROR)
         return;
-      }
       totalSent += sent;
     }
   }
 
   static void generateNoise() {
-    static random_device rd;
-    static mt19937 gen(rd());
-    static uniform_int_distribution<> distrib(0, 255);
     currentFrame.width = width;
     currentFrame.height = height;
     currentFrame.frameNumber++;
-    for (auto &pixel : currentFrame.data) pixel = static_cast<uint8_t>(distrib(gen));
+    
+    // Simulate analog TV noise by introducing horizontal bands of varying intensity
+    static random_device rd;
+    static mt19937 gen(rd());
+    static uniform_int_distribution<> distrib(0, 255);
+    static uniform_int_distribution<> bandDistrib(0, 50); // Band intensity variation
+
+    for (int y = 0; y < height; ++y) {
+      bool drawLine{ y != (currentFrame.frameNumber % height) };
+      int bandOffset = bandDistrib(gen); // Random offset for each horizontal band
+      for (int x = 0; x < width; ++x) {
+        int idx = y * width + x;
+        int noiseValue = distrib(gen) + bandOffset; // Add band offset to noise
+        currentFrame.data[idx] = drawLine ? static_cast<uint8_t>(min(255, max(0, noiseValue))) : 0;
+      }
+    }
   }
 
   void initializeBitmapInfo() {
-    bmi.bmiHeader = {sizeof(BITMAPINFOHEADER), width, -height, 1, 8, BI_RGB, width * height, 0, 0, 256, 256};
-    for (int i = 0; i < 256; ++i) bmi.bmiColors[i] = {static_cast<BYTE>(i), static_cast<BYTE>(i), static_cast<BYTE>(i), 0};
+    ZeroMemory(&bmi, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;  // Negative for top-down bitmap
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 8;      // 8-bit grayscale
+    bmi.bmiHeader.biCompression = BI_RGB;
+    bmi.bmiHeader.biSizeImage = width * height;
+    bmi.bmiHeader.biClrUsed = 256;     // Using all 256 colors
+    bmi.bmiHeader.biClrImportant = 256;
+
+    // Initialize grayscale palette - BGR order required by Windows GDI
+    for (int i = 0; i < 256; i++) {
+        bmi.bmiColors[i].rgbBlue = static_cast<BYTE>(i);
+        bmi.bmiColors[i].rgbGreen = static_cast<BYTE>(i);
+        bmi.bmiColors[i].rgbRed = static_cast<BYTE>(i);
+        bmi.bmiColors[i].rgbReserved = 0;
+    }
   }
 
   void registerWindowClass() {
@@ -168,7 +194,8 @@ private:
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC hdc = BeginPaint(hwnd, &ps);
-      SetDIBitsToDevice(hdc, 0, 0, width, height, 0, 0, 0, height, currentFrame.data.data(), &bmi, DIB_RGB_COLORS);
+      SetDIBitsToDevice(hdc, 0, 0, width, height, 0, 0, 0, height, currentFrame.data.data(), 
+                        reinterpret_cast<const BITMAPINFO*>(&bmi), DIB_RGB_COLORS);
       EndPaint(hwnd, &ps);
       return 0;
     }

@@ -1,4 +1,3 @@
-
 #define UNICODE
 #define _UNICODE
 #define WIN32_LEAN_AND_MEAN
@@ -90,7 +89,7 @@ private:
     }
   }
 
-  static void sendData(size_t frameCount, const Frame& frame) {
+  static void sendData(const Frame& frame) {
     if (clientSocket == INVALID_SOCKET) return;
 
     // Send frame header first

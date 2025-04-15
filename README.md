@@ -1,14 +1,15 @@
 # GrayscaleNoise Application
 
-A Windows application that generates and displays real-time grayscale noise patterns using GDI and network communication.
+A Windows application that generates and displays real-time grayscale noise patterns using GDI and network communication, with support for multicasting to multiple server instances.
 
 ## Features
 
 - Real-time grayscale noise generation at 25 FPS
 - Client-server architecture using TCP/IP
+- Support for multicasting to multiple server instances
+- Configurable server ports via command line
 - Windows GDI-based rendering
 - FPS counter display
-- Resolution: 792x793 pixels
 
 ## Requirements
 
@@ -38,23 +39,50 @@ cmake --build . --config Release
 
 ## Usage
 
-1. Start the server first:
+1. Start the first server instance (default port 12345):
 ```bash
 ./build/Release/server.exe
 ```
 
-2. Then run the client:
+   Or specify a custom port:
+```bash
+./build/Release/server.exe 12345
+```
+
+2. Start additional server instances on different ports:
+```bash
+./build/Release/server.exe 12346
+```
+
+3. Run the client (automatically connects to configured servers):
 ```bash
 ./build/Release/client.exe
 ```
 
-The application will display a window showing real-time grayscale noise patterns with FPS counter in the title bar.
+The client will display a window showing real-time grayscale noise patterns and stream them to all connected servers. Each window shows its FPS counter in the title bar.
 
 ## Network Configuration
 
 By default:
-- Server listens on: 127.0.0.1:12345
-- Client connects to: 127.0.0.1:12345
+- First server listens on: 127.0.0.1:12345
+- Second server listens on: 127.0.0.1:12346
+- Client automatically connects to both servers
+
+To modify server connections in the client, edit the SERVERS array in client.cpp:
+```cpp
+vector<ServerInfo> SERVERS = {
+    {"127.0.0.1", 12345, INVALID_SOCKET},
+    {"127.0.0.1", 12346, INVALID_SOCKET}
+};
+```
+
+## Performance Optimizations
+
+- TCP_NODELAY enabled for reduced latency
+- Double buffering for smooth display
+- Pre-allocated frame buffers
+- Thread-safe buffer management
+- Efficient GDI rendering with 8-bit grayscale
 
 ## License
 

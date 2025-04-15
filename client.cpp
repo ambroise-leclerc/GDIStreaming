@@ -9,14 +9,24 @@
 #include <cstdint>
 #include <random>
 #include <string>
+#include <vector>
+#include <mutex>
 
 #pragma comment(lib, "ws2_32.lib")
 
 using namespace std;
 
 // Network configuration
-const unsigned short SERVER_PORT = 12345;
-const char* SERVER_IP = "127.0.0.1";
+struct ServerInfo {
+    const char* ip;
+    unsigned short port;
+    SOCKET socket;
+};
+
+vector<ServerInfo> SERVERS = {
+    {"127.0.0.1", 12345, INVALID_SOCKET},
+    {"127.0.0.1", 12346, INVALID_SOCKET}  // Second server on different port
+};
 
 struct Frame {
   uint32_t width;
@@ -37,20 +47,20 @@ class NoiseWindow {
   } inline static bmi{};
   inline static Frame currentFrame{};  // Use default constructor
   inline static chrono::steady_clock::time_point lastFpsTime{};
-  inline static SOCKET clientSocket = INVALID_SOCKET;
+  inline static vector<SOCKET> serverSockets;
+  inline static mutex socketsMutex;
   HDC hdc{nullptr};
   HWND hwnd{nullptr};
 
 public:
   NoiseWindow() {
-    // Initialize frame properties before connecting
     currentFrame.width = width;
     currentFrame.height = height;
     currentFrame.dataSize = width * height;
     currentFrame.frameNumber = 0;
     
     initializeWinsock();
-    connectToServer();
+    connectToServers();
     initializeBitmapInfo();
     registerWindowClass();
     createWindow();
@@ -60,9 +70,7 @@ public:
 
   ~NoiseWindow() {
     KillTimer(hwnd, timerId);
-    if (clientSocket != INVALID_SOCKET) {
-      closesocket(clientSocket);
-    }
+    disconnectFromServers();
     WSACleanup();
   }
 
@@ -74,39 +82,65 @@ private:
     }
   }
 
-  void connectToServer() {
-    clientSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (clientSocket == INVALID_SOCKET) {
-      WSACleanup();
-      throw runtime_error("Failed to create socket");
+  void connectToServers() {
+    for (auto& server : SERVERS) {
+      SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (sock == INVALID_SOCKET) {
+        continue;  // Skip this server and try next one
+      }
+
+      // Disable Nagle's algorithm for lower latency
+      int flag = 1;
+      setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char*)&flag, sizeof(flag));
+
+      sockaddr_in serverAddr = {};
+      serverAddr.sin_family = AF_INET;
+      serverAddr.sin_port = htons(server.port);
+      inet_pton(AF_INET, server.ip, &serverAddr.sin_addr);
+
+      if (connect(sock, (sockaddr*)&serverAddr, sizeof(serverAddr)) != SOCKET_ERROR) {
+        server.socket = sock;
+        lock_guard<mutex> lock(socketsMutex);
+        serverSockets.push_back(sock);
+      } else {
+        closesocket(sock);
+      }
     }
 
-    sockaddr_in serverAddr = {};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(SERVER_PORT);
-    inet_pton(AF_INET, SERVER_IP, &serverAddr.sin_addr);
-
-    if (connect(clientSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-      closesocket(clientSocket);
+    if (serverSockets.empty()) {
       WSACleanup();
-      throw runtime_error("Failed to connect to server");
+      throw runtime_error("Failed to connect to any server");
     }
   }
 
-  static void sendData(const Frame& frame) {
-    // Send frame header first
-    if (send(clientSocket, reinterpret_cast<const char*>(&frame), sizeof(uint32_t) * 4, 0) == SOCKET_ERROR) {
-      return;
+  void disconnectFromServers() {
+    lock_guard<mutex> lock(socketsMutex);
+    for (SOCKET sock : serverSockets) {
+      if (sock != INVALID_SOCKET) {
+        closesocket(sock);
+      }
     }
+    serverSockets.clear();
+  }
 
-    // Send frame data
-    auto buffer = reinterpret_cast<const char*>(frame.data.data());
-    size_t totalSent = 0;
-    while (totalSent < frame.dataSize) {
-      auto sent = send(clientSocket, buffer + totalSent, static_cast<int>(frame.dataSize - totalSent), 0);
-      if (sent == SOCKET_ERROR)
-        return;
-      totalSent += sent;
+  static void sendData(const Frame& frame) {
+    lock_guard<mutex> lock(socketsMutex);
+    for (SOCKET sock : serverSockets) {
+      if (sock != INVALID_SOCKET) {
+        // Send frame header
+        if (send(sock, reinterpret_cast<const char*>(&frame), sizeof(uint32_t) * 4, 0) == SOCKET_ERROR) {
+          continue;  // Skip to next server on error
+        }
+
+        // Send frame data
+        const char* buffer = reinterpret_cast<const char*>(frame.data.data());
+        size_t totalSent = 0;
+        while (totalSent < frame.dataSize) {
+          auto sent = send(sock, buffer + totalSent, static_cast<int>(frame.dataSize - totalSent), 0);
+          if (sent == SOCKET_ERROR) break;  // Skip to next server on error
+          totalSent += sent;
+        }
+      }
     }
   }
 

@@ -160,9 +160,10 @@ class ImageServer {
     ImageWindow& window;
     std::vector<std::thread> clientThreads;
     std::mutex clientThreadsMutex;
+    unsigned short port;
 
 public:
-    ImageServer(ImageWindow& win) : window(win) {
+    ImageServer(ImageWindow& win, unsigned short serverPort) : window(win), port(serverPort) {
         WSADATA wsaData;
         if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) { throw std::runtime_error("Failed to initialize WinSock"); }
 
@@ -184,7 +185,7 @@ public:
         sockaddr_in serverAddr = {};
         serverAddr.sin_family = AF_INET;
         serverAddr.sin_addr.s_addr = INADDR_ANY;
-        serverAddr.sin_port = htons(SERVER_PORT);
+        serverAddr.sin_port = htons(port);  // Use the provided port
 
         if (bind(listenSocket, (sockaddr*) &serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
             closesocket(listenSocket);
@@ -273,10 +274,19 @@ private:
     }
 };
 
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR lpCmdLine, int) {
     try {
+        // Parse command line for port number
+        unsigned short port = 12345; // Default port
+        if (lpCmdLine && wcslen(lpCmdLine) > 0) {
+            port = static_cast<unsigned short>(_wtoi(lpCmdLine));
+        }
+
+        // Update window title to show port
+        std::wstring title = std::wstring(WINDOW_TITLE) + L" (Port: " + std::to_wstring(port) + L")";
+        
         ImageWindow window;
-        ImageServer server(window);
+        ImageServer server(window, port);
 
         // Start server in a separate thread
         std::thread serverThread([&server]() { server.run(); });
